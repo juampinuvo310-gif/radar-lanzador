@@ -33,6 +33,7 @@ jobs:
         run: pip install -q -r radar/requirements.txt
 
       - name: Pasada del radar
+        id: pasada
         working-directory: radar
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -49,7 +50,19 @@ jobs:
         run: |
           git config user.name "Radar Autos Putzolu"
           git config user.email "bot@autosputzolu.com"
-          git add seen_cars.json
+          git add -A
           git commit -q -m "chore: actualizar historial de vistos [skip ci]" || exit 0
           git pull -q --rebase || true
           git push -q || echo "No se pudo guardar la memoria"
+
+      - name: Avisar por Telegram si falla antes de la pasada
+        if: failure() && steps.pasada.outcome != 'failure'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ "$(date -u +%M)" -lt 10 ]; then
+            curl -s -o /dev/null "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+              --data-urlencode "text=⚠️ El Radar no pudo arrancar en GitHub. Si sigue pasando, puede que haya vencido el permiso RADAR_TOKEN." || true
+          fi
