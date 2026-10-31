@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write   # solo para el paso que mantiene activo este repo
 
 concurrency:
   group: radar
@@ -65,4 +65,27 @@ jobs:
             curl -s -o /dev/null "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
               --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
               --data-urlencode "text=⚠️ El Radar no pudo arrancar en GitHub. Si sigue pasando, puede que haya vencido el permiso RADAR_TOKEN." || true
+          fi
+
+      - name: Mantener activo el lanzador
+        continue-on-error: true
+        # GitHub apaga las tareas programadas de un repo publico si pasan 60 dias sin commits.
+        # Si el ultimo commit tiene 30 dias o mas, hace uno minimo para que no se apague.
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          ultima=$(gh api "repos/$REPO/commits?per_page=1" --jq '.[0].commit.committer.date' 2>/dev/null || echo "")
+          [ -z "$ultima" ] && exit 0
+          dias=$(( ( $(date -u +%s) - $(date -u -d "$ultima" +%s) ) / 86400 ))
+          if [ "$dias" -ge 30 ]; then
+            git clone -q --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" vivo
+            cd vivo
+            git config user.name "Radar Autos Putzolu"
+            git config user.email "bot@autosputzolu.com"
+            date -u +%Y-%m-%dT%H:%M:%SZ > .ultima-actividad
+            git add .ultima-actividad
+            git commit -q -m "chore: mantener activo el radar [skip ci]"
+            git push -q || echo "No se pudo marcar actividad"
           fi
