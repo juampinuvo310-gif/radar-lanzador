@@ -1,0 +1,94 @@
+name: Prueba Apify (manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  prueba:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Bajar el codigo privado
+        uses: actions/checkout@v4
+        with:
+          repository: juampinuvo310-gif/radar-autos-azul
+          token: ${{ secrets.RADAR_TOKEN }}
+          path: radar
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -q requests
+      - name: Probar Apify
+        working-directory: radar
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+        run: |
+          cat > /tmp/prueba_apify.py <<'PYEOF'
+          #!/usr/bin/env python3
+          """Prueba de Apify (Facebook Marketplace) para el Radar. Guarda el detalle en el repo privado;
+          en el registro público solo imprime cantidades y costo."""
+          import json, os, time, requests
+
+          TOKEN = os.environ["APIFY_TOKEN"].strip()
+          ACTOR = "blackfalcondata~facebook-marketplace-scraper"
+          H = {"Authorization": f"Bearer {TOKEN}"}
+          API = "https://api.apify.com/v2"
+
+          entrada = {
+              "query": "",
+              "browseWithoutQuery": True,
+              "categories": ["vehicles"],
+              "latitude": -36.7770, "longitude": -59.8585,   # Azul
+              "radiusKm": 100,
+              "minPrice": 1500000, "maxPrice": 15000000,
+              "sortBy": "newest",
+              "availableOnly": True,
+              "maxResults": 30,
+              "includeDetails": True,
+              "descriptionFormat": "text",
+              "excludeEmptyFields": True,
+          }
+
+          r = requests.post(f"{API}/acts/{ACTOR}/runs", headers=H, json=entrada, params={"waitForFinish": 60}, timeout=90)
+          print("Arranque:", r.status_code)
+          run = r.json().get("data", {})
+          run_id = run.get("id")
+          for _ in range(40):
+              if run.get("status") in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"):
+                  break
+              time.sleep(10)
+              run = requests.get(f"{API}/actor-runs/{run_id}", headers=H, timeout=30).json()["data"]
+          print("Estado:", run.get("status"))
+
+          items = []
+          if run.get("defaultDatasetId"):
+              items = requests.get(f"{API}/datasets/{run['defaultDatasetId']}/items", headers=H,
+                                   params={"clean": "true"}, timeout=60).json()
+          time.sleep(5)
+          run = requests.get(f"{API}/actor-runs/{run_id}", headers=H, timeout=30).json()["data"]
+          costo = run.get("usageTotalUsd")
+          log = ""
+          try:
+              log = requests.get(f"{API}/actor-runs/{run_id}/log", headers=H, timeout=30).text[-6000:]
+          except Exception:
+              pass
+
+          print("Avisos:", len(items), "| Costo USD:", costo)
+          os.makedirs("pruebas_apify", exist_ok=True)
+          json.dump({"entrada": entrada, "estado": run.get("status"), "costo_usd": costo,
+                     "uso": run.get("usageUsd"), "items": items}, open("pruebas_apify/prueba1.json", "w", encoding="utf-8"),
+                    ensure_ascii=False, indent=1)
+          open("pruebas_apify/prueba1_log.txt", "w", encoding="utf-8").write(log)
+
+          PYEOF
+          python /tmp/prueba_apify.py
+      - name: Guardar resultado en el repo privado
+        if: always()
+        working-directory: radar
+        run: |
+          git config user.name "Radar Autos Putzolu"
+          git config user.email "bot@autosputzolu.com"
+          git add pruebas_apify || exit 0
+          git commit -q -m "prueba apify [skip ci]" || exit 0
+          git pull -q --rebase || true
+          git push -q
