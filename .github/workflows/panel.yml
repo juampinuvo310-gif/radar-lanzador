@@ -2,7 +2,7 @@ name: Panel web
 
 on:
   schedule:
-    - cron: '23 */2 * * *'   # cada 2 horas
+    - cron: '23 9 * * *'   # una vez por dia (los datos en vivo los manda el bot en cada pasada)
   workflow_dispatch:
 
 permissions:
@@ -43,6 +43,20 @@ jobs:
           echo "SUB=$sub" >> "$GITHUB_ENV"
           echo "Direccion: https://$sub"
 
+      - name: Preparar el espacio KV y la configuracion
+        run: |
+          api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces"
+          auth="Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+          id=$(curl -s -H "$auth" "$api?per_page=100" | jq -r '.result[]? | select(.title=="radar-panel") | .id' | head -1)
+          if [ -z "$id" ]; then
+            id=$(curl -s -X POST -H "$auth" -H "Content-Type: application/json" -d '{"title":"radar-panel"}' "$api" | jq -r '.result.id // empty')
+          fi
+          [ -z "$id" ] && { echo "No se pudo crear el KV (revisar el permiso Workers KV Storage del token)"; exit 1; }
+          mkdir -p functions
+          cp -r radar/panel_functions/. functions/
+          printf 'name = "%s"\npages_build_output_dir = "dist"\ncompatibility_date = "2026-11-01"\n\n[[kv_namespaces]]\nbinding = "KV"\nid = "%s"\n' "$PROYECTO" "$id" > wrangler.toml
+          echo "KV listo"
+
       - name: Revisar que el panel este protegido con Access
         # Si la direccion principal o las de prueba no piden login, se publica una pagina SIN datos.
         run: |
@@ -62,6 +76,7 @@ jobs:
 
       - name: Publicar en Cloudflare Pages
         run: |
-          npx --yes wrangler@4 pages deploy dist --project-name "$PROYECTO" --branch main --commit-dirty=true > /dev/null 2>&1 \
-            || { echo "No se pudo publicar"; exit 1; }
+          if npx --yes wrangler@4 pages deploy --branch main --commit-dirty=true > deploy.log 2>&1; then ok=1; else ok=0; fi
+          grep -iE 'error|success|uploaded|compiled|complete' deploy.log | grep -v 'pages.dev' || true
+          [ "$ok" = "1" ] || { echo "No se pudo publicar"; exit 1; }
           echo "Panel publicado (con datos: $PROTEGIDO)"
