@@ -1,0 +1,67 @@
+name: Panel web
+
+on:
+  schedule:
+    - cron: '23 */2 * * *'   # cada 2 horas
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: panel
+  cancel-in-progress: true
+
+jobs:
+  panel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      PROYECTO: radar-putzolu
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Bajar el codigo privado
+        uses: actions/checkout@v4
+        with:
+          repository: juampinuvo310-gif/radar-autos-azul
+          token: ${{ secrets.RADAR_TOKEN }}
+          path: radar
+
+      - name: Crear el proyecto en Cloudflare (solo la primera vez)
+        run: |
+          api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects"
+          auth="Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+          r=$(curl -s -H "$auth" "$api/$PROYECTO")
+          if [ "$(echo "$r" | jq -r .success)" != "true" ]; then
+            curl -s -X POST -H "$auth" -H "Content-Type: application/json" \
+              -d "{\"name\":\"$PROYECTO\",\"production_branch\":\"main\"}" "$api" > /dev/null
+            r=$(curl -s -H "$auth" "$api/$PROYECTO")
+          fi
+          sub=$(echo "$r" | jq -r '.result.subdomain // empty')
+          [ -z "$sub" ] && { echo "No se pudo crear/leer el proyecto"; exit 1; }
+          echo "SUB=$sub" >> "$GITHUB_ENV"
+          echo "Direccion: https://$sub"
+
+      - name: Revisar que el panel este protegido con Access
+        # Si la direccion principal o las de prueba no piden login, se publica una pagina SIN datos.
+        run: |
+          prot=1
+          for h in "$SUB" "control-$RANDOM.$SUB"; do
+            loc=$(curl -s -o /dev/null -w '%{redirect_url}' --max-time 20 "https://$h/" || true)
+            echo "$loc" | grep -q 'cloudflareaccess.com' || prot=0
+          done
+          echo "PROTEGIDO=$prot" >> "$GITHUB_ENV"
+          echo "Protegido con Access: $prot"
+
+      - name: Armar el panel
+        working-directory: radar
+        run: |
+          [ "$PROTEGIDO" = "1" ] || export PANEL_SIN_DATOS=1
+          python3 panel.py ../dist > /dev/null 2>&1 || { echo "No se pudo armar el panel"; exit 1; }
+
+      - name: Publicar en Cloudflare Pages
+        run: |
+          npx --yes wrangler@4 pages deploy dist --project-name "$PROYECTO" --branch main --commit-dirty=true > /dev/null 2>&1 \
+            || { echo "No se pudo publicar"; exit 1; }
+          echo "Panel publicado (con datos: $PROTEGIDO)"
