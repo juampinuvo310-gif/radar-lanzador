@@ -1,0 +1,44 @@
+name: Vigia
+
+# v13: cada hora mira el "latido" que deja el bot en cada pasada (en el KV del panel).
+# Si hace más de 90 minutos que no pasa, avisa por Telegram (una sola vez por caída).
+# Sirve para enterarse en el momento si GitHub frena las pasadas o venció un permiso.
+
+on:
+  schedule:
+    - cron: '47 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vigia:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Revisar el latido
+        run: |
+          api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces"
+          auth="Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+          id=$(curl -s -H "$auth" "$api?per_page=100" | jq -r '.result[]? | select(.title=="radar-panel") | .id' | head -1)
+          [ -z "$id" ] && { echo "Sin KV"; exit 0; }
+          latido=$(curl -s -H "$auth" "$api/$id/values/latido" | tr -cd '0-9')
+          [ -z "$latido" ] && { echo "Todavia no hay latido"; exit 0; }
+          ahora=$(date +%s)
+          min=$(( (ahora - latido) / 60 ))
+          echo "Ultima pasada hace $min min"
+          [ "$min" -lt 90 ] && exit 0
+          avisado=$(curl -s -H "$auth" "$api/$id/values/vigia_aviso" | tr -cd '0-9')
+          if [ -n "$avisado" ] && [ "$avisado" -ge "$latido" ]; then echo "Ya avisado"; exit 0; fi
+          horas=$(( min / 60 ))
+          txt="🚨 El Radar no hace una pasada hace ${min} minutos (~${horas} h). Revisá en GitHub (Actions del lanzador) si las pasadas fallan o si venció un permiso. Te aviso de nuevo solo si vuelve a caerse."
+          curl -s -o /dev/null "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${txt}"
+          curl -s -o /dev/null -X PUT -H "$auth" "$api/$id/values/vigia_aviso" --data "$ahora"
+          echo "Avisado"

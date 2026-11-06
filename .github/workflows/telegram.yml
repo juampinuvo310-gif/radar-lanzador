@@ -1,0 +1,83 @@
+name: Botones al instante
+
+# v13: publica el Worker "radar-telegram" en Cloudflare y le dice a Telegram que le mande los mensajes ahí.
+# Se corre a mano (Actions -> Botones al instante -> Run workflow). Para volver a como antes: elegir "quitar".
+# Necesita que el token de Cloudflare (CLOUDFLARE_API_TOKEN) tenga también el permiso
+# "Cuenta · Workers Scripts · Editar" (además de Pages y Workers KV que ya tiene).
+
+on:
+  workflow_dispatch:
+    inputs:
+      accion:
+        description: "instalar o quitar"
+        required: true
+        default: instalar
+        type: choice
+        options: [instalar, quitar]
+
+permissions:
+  contents: read
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Quitar el webhook (vuelve a como antes)
+        if: inputs.accion == 'quitar'
+        run: |
+          curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook" | jq -r '.ok, .description'
+          echo "Listo: el bot vuelve a leer los mensajes en cada pasada."
+
+      - name: Bajar el codigo privado
+        if: inputs.accion == 'instalar'
+        uses: actions/checkout@v4
+        with:
+          repository: juampinuvo310-gif/radar-autos-azul
+          token: ${{ secrets.RADAR_TOKEN }}
+          path: radar
+
+      - name: Preparar el Worker
+        if: inputs.accion == 'instalar'
+        run: |
+          api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID"
+          auth="Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+          id=$(curl -s -H "$auth" "$api/storage/kv/namespaces?per_page=100" | jq -r '.result[]? | select(.title=="radar-panel") | .id' | head -1)
+          [ -z "$id" ] && { echo "No encontré el KV radar-panel (correr primero el workflow del panel)"; exit 1; }
+          sub=$(curl -s -H "$auth" "$api/workers/subdomain" | jq -r '.result.subdomain // empty')
+          if [ -z "$sub" ]; then
+            curl -s -X PUT -H "$auth" -H "Content-Type: application/json" -d '{"subdomain":"radar-putzolu"}' "$api/workers/subdomain" > /dev/null
+            sub=$(curl -s -H "$auth" "$api/workers/subdomain" | jq -r '.result.subdomain // empty')
+          fi
+          [ -z "$sub" ] && { echo "No pude leer el subdominio workers.dev (revisar el permiso Workers Scripts del token)"; exit 1; }
+          mkdir -p w && cp radar/worker/telegram.js w/
+          printf 'name = "radar-telegram"\nmain = "telegram.js"\ncompatibility_date = "2026-11-01"\nworkers_dev = true\n\n[[kv_namespaces]]\nbinding = "KV"\nid = "%s"\n' "$id" > w/wrangler.toml
+          echo "URL=https://radar-telegram.$sub.workers.dev/tg" >> "$GITHUB_ENV"
+          # Clave secreta que Telegram manda en cada mensaje (sale del token del bot: no hace falta otro secret)
+          echo "TG_SECRET=$(printf '%s' "radar-$TELEGRAM_BOT_TOKEN" | sha256sum | cut -c1-48)" >> "$GITHUB_ENV"
+
+      - name: Publicar el Worker
+        if: inputs.accion == 'instalar'
+        working-directory: w
+        run: |
+          npx --yes wrangler@4 deploy > deploy.log 2>&1 || { grep -iE 'error|permission|auth' deploy.log | head -5; echo "No se pudo publicar el Worker"; exit 1; }
+          printf '%s' "$TELEGRAM_BOT_TOKEN" | npx --yes wrangler@4 secret put TELEGRAM_BOT_TOKEN > /dev/null 2>&1
+          printf '%s' "$TELEGRAM_CHAT_ID" | npx --yes wrangler@4 secret put TELEGRAM_CHAT_ID > /dev/null 2>&1
+          printf '%s' "$TG_SECRET" | npx --yes wrangler@4 secret put TG_SECRET > /dev/null 2>&1
+          echo "Worker publicado"
+
+      - name: Conectar Telegram con el Worker
+        if: inputs.accion == 'instalar'
+        run: |
+          sleep 5
+          r=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+            --data-urlencode "url=$URL" --data-urlencode "secret_token=$TG_SECRET" \
+            --data-urlencode 'allowed_updates=["message","callback_query"]')
+          echo "$r" | jq -r '.ok, .description'
+          [ "$(echo "$r" | jq -r .ok)" = "true" ] || exit 1
+          echo "Listo: los botones contestan al instante."
