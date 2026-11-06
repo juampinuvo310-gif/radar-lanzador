@@ -28,6 +28,11 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
+      - name: Limpiar el token (el secret puede tener un salto de línea al final)
+        run: |
+          t=$(printf '%s' "$TELEGRAM_BOT_TOKEN" | tr -d '[:space:]'); echo "::add-mask::$t"; echo "TELEGRAM_BOT_TOKEN=$t" >> "$GITHUB_ENV"
+          c=$(printf '%s' "$TELEGRAM_CHAT_ID" | tr -d '[:space:]'); echo "::add-mask::$c"; echo "TELEGRAM_CHAT_ID=$c" >> "$GITHUB_ENV"
+
       - name: Quitar el webhook (vuelve a como antes)
         if: inputs.accion == 'quitar'
         run: |
@@ -58,8 +63,8 @@ jobs:
           mkdir -p w && cp radar/worker/telegram.js w/
           printf 'name = "radar-telegram"\nmain = "telegram.js"\ncompatibility_date = "2026-11-01"\nworkers_dev = true\n\n[[kv_namespaces]]\nbinding = "KV"\nid = "%s"\n' "$id" > w/wrangler.toml
           echo "URL=https://radar-telegram.$sub.workers.dev/tg" >> "$GITHUB_ENV"
-          # Clave secreta que Telegram manda en cada mensaje (sale del token del bot: no hace falta otro secret)
-          echo "TG_SECRET=$(printf '%s' "radar-$TELEGRAM_BOT_TOKEN" | sha256sum | cut -c1-48)" >> "$GITHUB_ENV"
+          # Clave secreta que Telegram manda en cada mensaje: nueva al azar en cada instalación y oculta en el registro
+          sec=$(openssl rand -hex 24); echo "::add-mask::$sec"; echo "TG_SECRET=$sec" >> "$GITHUB_ENV"
 
       - name: Publicar el Worker
         if: inputs.accion == 'instalar'

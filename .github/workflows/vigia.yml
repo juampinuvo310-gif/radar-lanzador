@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Revisar el latido
         run: |
+          TELEGRAM_BOT_TOKEN=$(printf '%s' "$TELEGRAM_BOT_TOKEN" | tr -d '[:space:]'); echo "::add-mask::$TELEGRAM_BOT_TOKEN"
+          TELEGRAM_CHAT_ID=$(printf '%s' "$TELEGRAM_CHAT_ID" | tr -d '[:space:]')
           api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces"
           auth="Authorization: Bearer $CLOUDFLARE_API_TOKEN"
           id=$(curl -s -H "$auth" "$api?per_page=100" | jq -r '.result[]? | select(.title=="radar-panel") | .id' | head -1)
