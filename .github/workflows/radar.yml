@@ -92,3 +92,31 @@ jobs:
             git commit -q -m "chore: mantener activo el radar [skip ci]"
             git push -q || echo "No se pudo marcar actividad"
           fi
+
+  # v15.2: GitHub larga las tareas programadas cuando quiere (hubo huecos de 2-3 h).
+  # Cada pasada deja lanzada la siguiente; el horario programado de arriba queda de respaldo
+  # y el Vigía la vuelve a encender si la cadena se corta.
+  siguiente:
+    needs: pasada
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      CADA_MINUTOS: '20'   # tiempo entre el arranque de una pasada y el de la siguiente
+    steps:
+      - name: Lanzar la proxima pasada
+        run: |
+          inicio=$(gh api "repos/$REPO/actions/runs/${{ github.run_id }}" --jq '.run_started_at')
+          pasaron=$(( $(date -u +%s) - $(date -u -d "$inicio" +%s) ))
+          espera=$(( CADA_MINUTOS * 60 - pasaron ))
+          [ "$espera" -gt 0 ] && { echo "Espero $espera s"; sleep "$espera"; }
+          # Si ya hay otra pasada en cola (por el horario de respaldo), no hace falta otra
+          otras=$(gh api "repos/$REPO/actions/workflows/radar.yml/runs?per_page=20" \
+            --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="queued" or .status=="in_progress" or .status=="pending" or .status=="waiting")] | length')
+          if [ "$otras" -gt 0 ]; then echo "Ya hay una pasada en cola"; exit 0; fi
+          gh api -X POST "repos/$REPO/actions/workflows/radar.yml/dispatches" -f ref=main
+          echo "Proxima pasada lanzada"
